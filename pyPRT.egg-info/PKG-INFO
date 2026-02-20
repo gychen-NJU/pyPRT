@@ -1,0 +1,22 @@
+Metadata-Version: 2.4
+Name: pyPRT
+Version: 0.1.0
+Summary: A Python library for synthesis Stokes spectral
+Author: Guoyin Chen
+Author-email: gychen@smail.nju.edu.cn
+Classifier: Programming Language :: Python :: 3
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: numpy>=1.18.0
+Requires-Dist: torch>=2.5.0
+Requires-Dist: scipy>=1.15.0
+Requires-Dist: pandas>=2.2.0
+Dynamic: author
+Dynamic: author-email
+Dynamic: classifier
+Dynamic: description-content-type
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary
