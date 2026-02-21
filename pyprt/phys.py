@@ -156,6 +156,7 @@ def Saha(theta, chi, uj, ui, Pe):
     Return:
     nj/ni = 2uj/ui*(2 pi me k T)^1.5/h^3 * exp(-chi/kT)/Ne
     """
+    # print(uj.device,ui.device,theta.device)
     ret = uj/ui*torch.pow(10, 9.0805126-theta*chi)/(Pe*theta**2.5)
     return ret
 
@@ -170,7 +171,7 @@ def molecular_balance(theta):
     Return:
         cmol: torch.Tensor #[Nb,Nt,2] -> cmol[0]-> H2+, cmol[1]-> H2
     '''
-    cmol = torch.zeros(2,*theta.shape)
+    cmol = torch.zeros(2,*theta.shape).to(device=theta.device, dtype=theta.dtype)
     cmol[0] = -11.206998+theta*(2.7942767+theta*(7.9196803e-2-theta*2.4790744e-2)) # H2+
     cmol[1] = -12.533505+theta*(4.9251644+theta*(-5.6191273E-2+theta*3.2687661E-3)) # H2
     return cmol
