@@ -112,7 +112,8 @@ def continuum_absorption(lambdas,T,Pe,p,**kwargs):
     """
     refidx = kwargs.get('refidx',1) # refractive index
     debug  = kwargs.get('debug', False)
-    Nw = lambdas.size(2)
+    # print(lambdas.shape)
+    Nw = max(lambdas.size(2),T.size(2))
     Nb = T.size(0)
     Nt = T.size(1)
     wavs_cm = lambdas*1e-8 # centimeter

@@ -329,7 +329,7 @@ def Hermitian_method(ltau, K_matx, S_func):
     Ii = torch.matmul(Kinv[:,0],dS[:,0])+S[:,0]
     K2 = torch.matmul(K,K)
     dK = derivative(K, ltau, dim=1)
-    eye = torch.eye(4)[None,None,:,:]
+    eye = torch.eye(4)[None,None,:,:].to(device=ltau.device,dtype=ltau.dtype)
     for j in range(1,Nt):
         dz = dzi[:,j-1]
         d2 = d2i[:,j-1]

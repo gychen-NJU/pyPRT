@@ -19,6 +19,8 @@ def ie_pressure(theta, pe, **kwargs):
         p: torch.Tensor #[Nb,Nt,1] -> gas pressure
     '''
     # p = torch.zeros(99,*theta.shape)
+    device=theta.device
+    dtype=theta.dtype
     atomic_properties = kwargs.get('atomic_properties',atomic_config())
     p = dict()
     Nb = theta.shape[0]
@@ -34,10 +36,10 @@ def ie_pressure(theta, pe, **kwargs):
     g4 = torch.where(neg_pe,0.,g4)
     g5 = torch.where(neg_pe,0.,g5)
 
-    abundance = torch.zeros(nconsider,1,1,1) # [28,1,1,1] -> abu of 28 compenents
+    abundance = torch.zeros(nconsider,1,1,1,device=device,dtype=dtype) # [28,1,1,1] -> abu of 28 compenents
     chi1 = torch.zeros_like(abundance) # first ionization potential of 28 compenents
     chi2 = torch.zeros_like(abundance) # second ionization potential of 28 compenents
-    u0 = torch.zeros(nconsider,*theta.shape) # [28,Nb,Nt,1] -> partition function of neutral atom for 28 compenents
+    u0 = torch.zeros(nconsider,*theta.shape).to(device=device,dtype=dtype) # [28,Nb,Nt,1] -> partition function of neutral atom for 28 compenents
     u1 = torch.zeros_like(u0) # partition function of ionized atom for 28 compenents
     u2 = torch.zeros_like(u0) # partition function of doubly ionized atom for 28 compenents
     for i in range(nconsider):

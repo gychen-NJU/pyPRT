@@ -37,6 +37,7 @@ class synthesis2():
             'He': {'polarizability': 2.1e-25, 'mass': 3.97}
             }
         self.debug_log = dict()
+        self.RF = dict()
 
     def __call__(self,lambdas,ltau,T,Pe,B,th,ph,vLos,vmic,vmac,**kwargs):
         """
@@ -62,30 +63,135 @@ class synthesis2():
         """
         self.device = kwargs.get('device',T.device)
         self.dtype = kwargs.get('dtype',T.dtype)
-        ltau = to_tensor(ltau,**kwargs)[None,:,None]
-        T    = to_tensor(T   ,**kwargs)[:,:,None]
-        Pe   = to_tensor(Pe  ,**kwargs)[:,:,None]
-        B    = to_tensor(B   ,**kwargs)[:,:,None]
-        th   = to_tensor(th  ,**kwargs)[:,:,None]
-        ph   = to_tensor(ph  ,**kwargs)[:,:,None]
-        vLos = to_tensor(vLos,**kwargs)[:,:,None]
-        vmic = to_tensor(vmic,**kwargs)[:,:,None]
+        compute_RF = kwargs.get('compute_RF',False)
+        self.Nb = T.size(0)
+        self.Nt = ltau.size(0)
+        self.Nw = lambdas.size(0)
+        if compute_RF:
+            # T    = T.requires_grad_(True)
+            # Pe   = Pe.requires_grad_(True)
+            # B    = B.requires_grad_(True)
+            # th   = th.requires_grad_(True)
+            # ph   = ph.requires_grad_(True)
+            # vLos = vLos.requires_grad_(True)
+            # vmic = vmic.requires_grad_(True)
+            X = torch.cat([T,Pe,B,th,ph,vLos,vmic],dim=-1)
+        t  = to_tensor(T   ,**kwargs)[:,:,None]
+        p  = to_tensor(Pe  ,**kwargs)[:,:,None]
+        b  = to_tensor(B   ,**kwargs)[:,:,None]
+        g  = to_tensor(th  ,**kwargs)[:,:,None]
+        f  = to_tensor(ph  ,**kwargs)[:,:,None]
+        v  = to_tensor(vLos,**kwargs)[:,:,None]
+        m = to_tensor(vmic,**kwargs)[:,:,None]
         vmac = to_tensor(vmac,**kwargs)[:,None]
+        ltau = to_tensor(ltau,**kwargs)[None,:,None]
         lambdas = to_tensor(lambdas,**kwargs)[None,None,:]
-        self.Nb = T.size(0)
-        self.Nt = ltau.size(1)
-        self.Nw = lambdas.size(2)
-        theta = 5040/T
-        p = ie_pressure(theta,Pe,atomic_properties=self.AP)
-        self.Nb = T.size(0)
-        self.Nt = ltau.size(1)
-        self.Nw = lambdas.size(2)
-        K_matx = self._Propagation_matrix(p,T,Pe,B,th,ph,vLos,vmic,lambdas,**kwargs)
-        S_func = self._Source_function(T, lambdas,**kwargs)
+        theta = 5040/t
+        P = ie_pressure(theta,p,atomic_properties=self.AP)
+        K_matx = self._Propagation_matrix(P,t,p,b,g,f,v,m,lambdas,**kwargs)
+        S_func = self._Source_function(t, lambdas,**kwargs)
         Stokes = self.rte_solver(ltau,K_matx,S_func)
         # print(Stokes.shape)
         Stokes_obs = Apply_Macroturbulence_Conv(Stokes,vmac, lambdas)
+        if compute_RF:
+            # self._ResponseFunction(Stokes_obs,T,Pe,B,th,ph,vLos,vmic)
+            self._ResponseFunction_fast(lambdas[0,0],ltau[0,:,0],X,vmac,**kwargs)
         return Stokes_obs
+
+    def _ResponseFunction_fast(self,lambdas,ltau,X,vmac,**kwargs):
+        print(" ### Start computing Response Function ###")
+        Nb,Nt,Nw=self.Nb,self.Nt,self.Nw
+        S_str = ["I","Q","U","V"]
+        param_str = ['T','Pe','B','gamma','phi','vLos','vmic']
+        RF = dict()
+        for iS in S_str:
+            RF[iS]={iP:torch.zeros((Nb,Nt,Nw),device=self.device,dtype=self.dtype) for iP in param_str}
+        for ib,(xi,maci) in enumerate(zip(X,vmac)):
+            def sfunc(xi):
+                ti,pi,bi,gi,fi,vi,mi = xi.reshape(7,-1)
+                ti = ti[None,:]
+                pi = pi[None,:]
+                bi = bi[None,:]
+                gi = gi[None,:]
+                fi = fi[None,:]
+                vi = vi[None,:]
+                mi = mi[None,:]
+                # print(maci.shape,vmac.shape)
+                si = self.__call__(lambdas,ltau,ti,pi,bi,gi,fi,vi,mi,maci)
+                return si[0]
+            xi.requires_grad_(True)
+            jacobi = torch.autograd.functional.jacobian(sfunc,xi).detach()
+            jacobi = jacobi.permute(2,0,1) # (Nt*7,Nw,4)
+            if (debug:=kwargs.get('debug',None)):
+                if debug.get('check_jacobi',None):
+                    print('recording jacobi')
+                    self.debug_log['jacobi']=jacobi.detach().cpu().clone()
+            for ip,iP in enumerate(param_str):
+                RF['I'][iP][ib]=jacobi[ip*Nt:(ip+1)*Nt,:,0]
+                RF['Q'][iP][ib]=jacobi[ip*Nt:(ip+1)*Nt,:,1]
+                RF['U'][iP][ib]=jacobi[ip*Nt:(ip+1)*Nt,:,2]
+                RF['V'][iP][ib]=jacobi[ip*Nt:(ip+1)*Nt,:,3]
+        self.RF=RF
+
+    def _ResponseFunction(
+        self,
+        Stokes_obs,T,Pe,B,th,ph,vLos,vmic,
+        **kwargs
+    ):
+        """
+        Calculating the response function by given parameters
+        """
+        print(" ### Start computing Response Function ###")
+        Nb,Nt,Nw=self.Nb,self.Nt,self.Nw
+        S_str = ["I","Q","U","V"]
+        param_str = ['T','Pe','B','gamma','phi','vLos','vmic']
+        RF = dict()
+        for iS in S_str:
+            RF[iS]={iP:torch.zeros((Nb,Nt,Nw),device=self.device,dtype=self.dtype) for iP in param_str}
+        for ib,s in enumerate(Stokes_obs):
+            i,q,u,v = s.T
+            for iw in range(s.size(0)):
+                # print(f" ## Traverse the wavelength point: {iw+1:4d}/{Nw}")
+                RF['I']['T'][ib,:,iw]=self._grad(self,i[iw],T).detach().cpu()[ib]
+                RF['Q']['T'][ib,:,iw]=self._grad(self,q[iw],T).detach().cpu()[ib]
+                RF['U']['T'][ib,:,iw]=self._grad(self,u[iw],T).detach().cpu()[ib]
+                RF['V']['T'][ib,:,iw]=self._grad(self,v[iw],T).detach().cpu()[ib]
+                RF['I']['Pe'][ib,:,iw]=self._grad(self,i[iw],Pe).detach().cpu()[ib]
+                RF['Q']['Pe'][ib,:,iw]=self._grad(self,q[iw],Pe).detach().cpu()[ib]
+                RF['U']['Pe'][ib,:,iw]=self._grad(self,u[iw],Pe).detach().cpu()[ib]
+                RF['V']['Pe'][ib,:,iw]=self._grad(self,v[iw],Pe).detach().cpu()[ib]
+                RF['I']['B'][ib,:,iw]=self._grad(self,i[iw],B).detach().cpu()[ib]
+                RF['Q']['B'][ib,:,iw]=self._grad(self,q[iw],B).detach().cpu()[ib]
+                RF['U']['B'][ib,:,iw]=self._grad(self,u[iw],B).detach().cpu()[ib]
+                RF['V']['B'][ib,:,iw]=self._grad(self,v[iw],B).detach().cpu()[ib]
+                RF['I']['gamma'][ib,:,iw]=self._grad(self,i[iw],th).detach().cpu()[ib]
+                RF['Q']['gamma'][ib,:,iw]=self._grad(self,q[iw],th).detach().cpu()[ib]
+                RF['U']['gamma'][ib,:,iw]=self._grad(self,u[iw],th).detach().cpu()[ib]
+                RF['V']['gamma'][ib,:,iw]=self._grad(self,v[iw],th).detach().cpu()[ib]
+                RF['I']['phi'][ib,:,iw]=self._grad(self,i[iw],ph).detach().cpu()[ib]
+                RF['Q']['phi'][ib,:,iw]=self._grad(self,q[iw],ph).detach().cpu()[ib]
+                RF['U']['phi'][ib,:,iw]=self._grad(self,u[iw],ph).detach().cpu()[ib]
+                RF['V']['phi'][ib,:,iw]=self._grad(self,v[iw],ph).detach().cpu()[ib]
+                RF['I']['vLos'][ib,:,iw]=self._grad(self,i[iw],vLos).detach().cpu()[ib]
+                RF['Q']['vLos'][ib,:,iw]=self._grad(self,q[iw],vLos).detach().cpu()[ib]
+                RF['U']['vLos'][ib,:,iw]=self._grad(self,u[iw],vLos).detach().cpu()[ib]
+                RF['V']['vLos'][ib,:,iw]=self._grad(self,v[iw],vLos).detach().cpu()[ib]
+                RF['I']['vmic'][ib,:,iw]=self._grad(self,i[iw],vmic).detach().cpu()[ib]
+                RF['Q']['vmic'][ib,:,iw]=self._grad(self,q[iw],vmic).detach().cpu()[ib]
+                RF['U']['vmic'][ib,:,iw]=self._grad(self,u[iw],vmic).detach().cpu()[ib]
+                RF['V']['vmic'][ib,:,iw]=self._grad(self,v[iw],vmic).detach().cpu()[ib]
+        self.RF = RF
+
+    @staticmethod
+    def _grad(self,y,x):
+        g = torch.autograd.grad(
+            y,
+            x,
+            grad_outputs=torch.ones_like(y),
+            create_graph=True,
+            retain_graph=True,
+        )[0]
+        return g
 
     def _Propagation_matrix(
         self,
