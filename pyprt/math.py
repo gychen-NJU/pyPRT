@@ -153,7 +153,7 @@ class TensorGridInterpolator:
             xn = self._normalize(xi,ix, dim=idim) # normalized to [-1,1]
             grid_coords.append(xn)
         grid_coords = torch.stack(grid_coords,dim=-1)
-        values = self.values
+        values = self.values.to(device=points.device,dtype=points.dtype)
         result = F.grid_sample(
             values,
             grid_coords,
@@ -167,7 +167,7 @@ class TensorGridInterpolator:
         return result
 
     def _find_indices(self, xi, dim=0):
-        igrid = self.grid_info[dim]['grid']
+        igrid = self.grid_info[dim]['grid'].to(xi.device)
         if self.grid_info[dim]['is_uniform']:
             return None
         else:
@@ -176,7 +176,7 @@ class TensorGridInterpolator:
             return indices
 
     def _normalize(self, xi, indices, dim=0):
-        igrid = self.grid_info[dim]['grid']
+        igrid = self.grid_info[dim]['grid'].to(xi.device)
         vmin  = self.grid_info[dim]['lower']
         vmax  = self.grid_info[dim]['upper']
             
@@ -202,6 +202,11 @@ class TensorGridInterpolator:
                     f"dimension-{dim} out of bounds: {xi[out_of_bounds]}"
                 )
             else:
+                # raise warning
+                warnings.warn(
+                    f"dimension-{dim} out of bounds: {xi[out_of_bounds].squeeze().cpu().numpy()[:10]}.... "
+                    f"Clipping to bounds: [{self.grid_info[dim]['lower']}, {self.grid_info[dim]['upper']}]"
+                )
                 if self.fill_value is not None:
                     xi[out_of_bounds] = self.fill_value
                 else:
@@ -366,7 +371,7 @@ def Hermitian_method(ltau, K_matx, S_func):
 @register_rte('DELO')
 def DELO_method(ltau, K_matx, S_func):
     tau = torch.pow(10,ltau.squeeze())
-    eye = torch.eye(4)[None,None,None,:,:]
+    eye = torch.eye(4)[None,None,None,:,:].to(device=ltau.device,dtype=ltau.dtype)
     Kp  = K_matx-eye
     Sp  = torch.matmul(K_matx,S_func.unsqueeze(-1))
     dt  = torch.zeros_like(tau)

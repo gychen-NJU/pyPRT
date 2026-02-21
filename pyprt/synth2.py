@@ -5,7 +5,8 @@ from .phys import *
 from .atoms import atomic_config,atomic_properties
 from .pressure import ie_pressure
 from .absorption import continuum_absorption, selective_absorption
-from .utils import load_lines
+from .utils import load_lines,get_xyz
+import pkg_resources
 
 class synthesis2():
     """
@@ -24,6 +25,7 @@ class synthesis2():
         solver = 'Hermitian',
         refidx = 1., # refractive index
         lines = {"FeI":["6301.5","6302.5"]},
+        opacity_type='formula' # 'formula', 'ATLAS', 'Opacity Project'
         ):
         self.AP = atomic_config(table_abu)
         self.lines = load_lines(lines)
@@ -31,6 +33,7 @@ class synthesis2():
         self.device = None
         self.dtype = None
         self.refidx=refidx
+        self.opacity_type=opacity_type
         self.van_der_waals_contributor = {
             'H': {'polarizability': 6.6e-25, 'mass': 1},
             'H2': {'polarizability': 8e-25, 'mass': 2},
@@ -38,6 +41,7 @@ class synthesis2():
             }
         self.debug_log = dict()
         self.RF = dict()
+        self._OpacityInterpolator(opacity_type)
 
     def __call__(self,lambdas,ltau,T,Pe,B,th,ph,vLos,vmic,vmac,**kwargs):
         """
@@ -205,9 +209,36 @@ class synthesis2():
             p,T,Pe,B,vLos,vmic,lambdas,
             **kwargs
         )
-        wref = to_tensor(np.array([5000]),**kwargs)[None,None,:].to(device=self.device,dtype=self.dtype)
-        kappa5 = continuum_absorption(wref,   T,Pe,p,refidx=self.refidx)
-        kappaC = continuum_absorption(lambdas,T,Pe,p,refidx=self.refidx)
+        if self.opacity_type=='formula':
+            wref = to_tensor(np.array([5000]),**kwargs)[None,None,:].to(device=self.device,dtype=self.dtype)
+            kappa5 = continuum_absorption(wref,   T,Pe,p,refidx=self.refidx)
+            kappaC = continuum_absorption(lambdas,T,Pe,p,refidx=self.refidx)
+        elif self.opacity_type=='ATLAS':
+            Rg = const.R*1e7
+            Pg = p['pg']
+            kB = const.k*1e7
+            NH = p["p(H')"]/(kB*T)
+            amw= self.AP.amw.sum()/self.AP.abu.sum()
+            rg = Pg/(T*Rg/amw)
+            logT = torch.log10(T)
+            logP = torch.log10(Pg)
+            points = torch.stack([logT,logP,vmic],dim=-1)
+            kappaC = torch.pow(10,self.kapp_interp(points))*rg/NH
+            kappa5 = kappaC
+        elif self.opacity_type=='Opacity Project':
+            Rg = const.R*1e7
+            kB = const.k*1e7
+            Pg = p['pg']
+            NH = p["p(H')"]/(kB*T)
+            amw= self.AP.amw.sum()/self.AP.abu.sum()
+            rg = Pg/(T*Rg/amw)
+            logR = torch.log10(rg/(T*1e-6)**3)
+            logT = torch.log10(T)
+            points = torch.stack([logT,logR],dim=-1)
+            kappaC = torch.pow(10,self.kapp_interp(points))*rg/NH
+            kappa5 = kappaC
+        else:
+            raise ValueError(f'`opacity_type` only support "formula","ATLAS", or "Opacity Project", but get {self.opacity_type}')
         if (debug := kwargs.get('debug',None)):
             if debug.get('check_kappa'):
                 self.debug_log['kappa5']=kappa5
@@ -360,3 +391,53 @@ class synthesis2():
             if debug.get('check_Sfun',None):
                 self.debug_log['Sfun']=S
         return S
+
+    def _OpacityInterpolator(self, opacity_type):
+        if opacity_type=='formula':
+            self.kapp_interp = None
+            pass
+        elif opacity_type=='Opacity Project':
+            # tab_summs = kwargs.get('OPtab_summs', './table_summaries.csv')
+            tab_summs = pkg_resources.resource_filename(
+                'pyprt',
+                'data/OPtab_summaries.csv'
+            )
+            tab_summs = pd.read_csv(tab_summs)
+            XYZ = tab_summs.values[:,1:4]
+            X,Y,Z = get_xyz(self.AP)
+            OPtab_idx = np.argmin(np.abs(XYZ-np.array([X,Y,Z])[None,:]).sum(axis=1))
+            OPtabs_path = pkg_resources.resource_filename('pyprt', 'data/OPtabs')
+            OPtabs_file = sorted(glob.glob(os.path.join(OPtabs_path,'*.csv')))[OPtab_idx]
+            df_read = pd.read_csv(OPtabs_file)
+            logRlist = np.arange(-8.0,1.0+0.5,0.5)
+            logTlist = df_read.values[:,0]
+            opacitys  = df_read.values[:,1:]
+            grid_logR = torch.from_numpy(logRlist)
+            grid_logT = torch.from_numpy(logTlist)
+            OP_tensor = torch.from_numpy(opacitys)
+            OP_interp = TensorGridInterpolator((grid_logT,grid_logR),OP_tensor,bounds_error=False)
+            self.kapp_interp = OP_interp
+        elif opacity_type=='ATLAS':
+            atlas_tab = pkg_resources.resource_filename(
+                'pyprt',
+                'data/ATLAS_solar_ODF.txt'
+            )
+            atlas_odf = np.loadtxt(atlas_tab, skiprows=2)
+            atlas_logT = np.unique(atlas_odf[:,0])
+            atlas_logP = np.unique(atlas_odf[:,1])
+            atlas_vmic = np.array([0,1,2,4,8.])
+            nT = len(atlas_logT)
+            nP = len(atlas_logP)
+            nV = len(atlas_vmic)
+            atlas_kapp = atlas_odf[:,2:7].reshape(nT,nP,nV)
+            atlas_kapp_tensor = torch.from_numpy(atlas_kapp)
+            atlas_logT_tensor = torch.from_numpy(atlas_logT)
+            atlas_logP_tensor = torch.from_numpy(atlas_logP)
+            atlas_vmic_tensor = torch.from_numpy(atlas_vmic)
+            atlas_kapp_interp = TensorGridInterpolator(
+                (atlas_logT_tensor,atlas_logP_tensor,atlas_vmic_tensor),
+                atlas_kapp_tensor
+            )
+            self.kapp_interp = atlas_kapp_interp
+        else:
+            raise ValueError(f'`opacity_type` only support "formula","ATLAS", or "Opacity Project", but get {opacity_type}')

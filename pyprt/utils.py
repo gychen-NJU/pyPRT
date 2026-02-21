@@ -58,3 +58,13 @@ def load_initial_guess(model='Umbral_big_spot'):
             rhog        = data[:,10],
         )
         return initial_guess
+
+def get_xyz(atomic_properties):
+    """
+    Calculate the atmospheric abundance X(H),Y(He),Z(metal)
+    """
+    amw = atomic_properties.amw # abu*wgt
+    X = 1/amw
+    Y = X*atomic_properties.abu[1]*atomic_properties.wgt[1]
+    Z = 1-X-Y
+    return X,Y,Z
