@@ -109,6 +109,7 @@ def train(
     print_interval = kwargs.get('print_interval', 100)
     save_interval  = kwargs.get('save_interval', 10000)
     save_name      = kwargs.get('save_name', 'network')
+    check_batch    = kwargs.get('check_batch', False)
     directory      = os.path.dirname(save_name)
     if directory and not os.path.exists(directory):
         os.makedirs(directory, exist_ok=True)
@@ -140,6 +141,13 @@ def train(
             labels = labels.to(device)
             predct = net(inputs[:,0],inputs[:,1])
             iloss  = criterion(predct, labels)
+            if check_batch and (iepoch==1):
+                print(f"Batch: {ibatch:5d} | Loss: {iloss.item():.5e}")
+                if torch.any(torch.isnan(iloss)):
+                    print(f"inputs NaN: {torch.any(torch.isnan(inputs))}")
+                    print(f"labels NaN: {torch.any(torch.isnan(labels))}")
+                    print(f"predct NaN: {torch.any(torch.isnan(predct))}")
+                    raise ValueError("NaN values found in the forward pass")
             loss.append(iloss.item())
             optimizer.zero_grad()
             iloss.backward()
