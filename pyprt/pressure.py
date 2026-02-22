@@ -98,7 +98,7 @@ def ie_pressure(theta, pe, **kwargs):
     f4 = e*f5 # P(H2+)/P(H')
     f3 = g3*f1 # P(H-)/P(H')
     f2 = g2*f1 # P(H+)/P(H')
-    fe = signclamp(f2-f3+f4+g1,min=1.e-15,max=1.e15) # P(e-)/P(H')
+    fe = torch.abs(signclamp(f2-f3+f4+g1,min=1.e-15,max=1.e15)) # P(e-)/P(H')
 
     phtot=pe/fe
     
@@ -110,7 +110,7 @@ def ie_pressure(theta, pe, **kwargs):
     for i in range(5):
         f5=phtot*const6
         f4 = e*f5
-        fe = signclamp(f2-f3+f4+g1,min=1.e-15,max=1.e15)
+        fe = torch.abs(signclamp(f2-f3+f4+g1,min=1.e-15,max=1.e15))
         phtot = pe/fe
     pg = pe*(1.+(f1+f2+f3+f4+f5+0.1014)/fe)
     pg[large_f5] = pg_large_f5

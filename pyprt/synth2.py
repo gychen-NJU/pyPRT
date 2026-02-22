@@ -218,6 +218,7 @@ class synthesis2():
             Pg = p['pg']
             kB = const.k*1e7
             NH = p["p(H')"]/(kB*T)
+            # NH = const.N_A/self.AP.amw
             amw= self.AP.amw.sum()/self.AP.abu.sum()
             rg = Pg/(T*Rg/amw)
             logT = torch.log10(T)
@@ -230,6 +231,7 @@ class synthesis2():
             kB = const.k*1e7
             Pg = p['pg']
             NH = p["p(H')"]/(kB*T)
+            # NH = const.N_A/self.AP.amw
             amw= self.AP.amw.sum()/self.AP.abu.sum()
             rg = Pg/(T*Rg/amw)
             logR = torch.log10(rg/(T*1e-6)**3)
