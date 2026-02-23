@@ -265,15 +265,15 @@ def derivative(y, x, dim=1):
     
     dy = torch.zeros_like(y)
     idx = [slice(None)] * y_dim
-    idxi = idx[:dim]+[0]+idx[dim+1:]
-    idxj = idx[:dim]+[1]+idx[dim+1:]
+    idxi = tuple(idx[:dim]+[0]+idx[dim+1:])
+    idxj = tuple(idx[:dim]+[1]+idx[dim+1:])
     dy[0] = (y[idxj]-y[idxi])/(x[idxj]-x[idxi])
-    idxi = idx[:dim]+[-2]+idx[dim+1:]
-    idxj = idx[:dim]+[-1]+idx[dim+1:]
+    idxi = tuple(idx[:dim]+[-2]+idx[dim+1:])
+    idxj = tuple(idx[:dim]+[-1]+idx[dim+1:])
     dy[-1] = (y[idxj]-y[idxi])/(x[idxj]-x[idxi])
-    idxh = idx[:dim]+[slice(0,-2)]+idx[dim+1:]
-    idxi = idx[:dim]+[slice(1,-1)]+idx[dim+1:]
-    idxj = idx[:dim]+[slice(2,None)]+idx[dim+1:]
+    idxh = tuple(idx[:dim]+[slice(0,-2)]+idx[dim+1:])
+    idxi = tuple(idx[:dim]+[slice(1,-1)]+idx[dim+1:])
+    idxj = tuple(idx[:dim]+[slice(2,None)]+idx[dim+1:])
     d1 = 1/(x[idxi]-x[idxj])
     d2 = 1/(x[idxh]-x[idxi])
     d3 = 1/(x[idxh]-x[idxj])
@@ -511,3 +511,16 @@ def voigt2(v,a):
         H = z.real
         F = z.imag*ivsigno*.5
     return H,F
+
+def lagrange_interp(x,yh,yi,yj,xh,xi,xj):
+    """
+    Lagrange interpolation
+    """
+    d1 = x-xh
+    d2 = x-xi
+    d3 = x-xj
+    d12 = xh-xi
+    d13 = xh-xj
+    d23 = xi-xj
+    ret = yh*d2*d3/(d12*d13) + yi*d1*d3/(d23*d13) + yj*d1*d2/(d12*d23)
+    return ret

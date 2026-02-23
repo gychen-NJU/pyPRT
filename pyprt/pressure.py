@@ -2,7 +2,7 @@ from .needs import *
 from .phys import *
 from .atoms import atomic_config
 from .partition_function import u123
-from .math import signclamp, f1_formal_sol1,f1_formal_sol2
+from .math import signclamp, RK4_solver, lagrange_interp,derivative
 import pkg_resources
 import warnings
 
@@ -251,3 +251,43 @@ def relax_pe(T,Pg,maxiters=20):
     if torch.any(diff>prec):
         warnings.warn(f'Pressure relaxation did not converge after {maxiters} iterations.')
     return pe1
+
+def hse_pressure(ltau,kappac,B,Pg_top,hc_mu=1):
+    """
+    Parameters:
+        ltau    : log(tau) # ( 1,Nt,1), expand from small to large
+        kappac  : kappa    # (Nb,Nt,1)
+        B       : Bmag     # (Nb,Nt,1)
+        Pg_top  : top boundary pressure # (Nb,1)
+        hc_mu   : cos(hc)  # default value is 1 cos(heliocentric angle)
+        AP      : atomic properties
+    Returns:
+        Pg    # (Nb,Nt,1)
+    """
+    Nt = ltau.squeeze().size(0)
+    g = 2.74e4*hc_mu
+    Pmag = B**2/(8*np.pi)
+    dPmag = derivative(Pmag,ltau,dim=1)
+    lkapp = torch.log10(kappac)
+    def rfunc(ltaui,Pi):
+        i = torch.searchsorted(ltau.squeeze(),ltaui).clamp(min=1,max=Nt-2)
+        h = i-1
+        j = i+1
+        lti = torch.tensor([ltaui]).unsqueeze(0)
+        lkappi = lagrange_interp(
+            # torch.tensor([ltaui]).unsqueeze(0),            
+            ltau[:,i],
+            lkapp[:,h],lkapp[:,i],lkapp[:,j],
+            ltau[:,h],ltau[:,i],ltau[:,j]
+        )
+        dPmagi = lagrange_interp(
+            ltau[:,i],
+            # torch.tensor([ltaui]).unsqueeze(0),
+            dPmag[:,h],dPmag[:,i],dPmag[:,j],
+            ltau[:,h],ltau[:,i],ltau[:,j]
+        )
+        kappai = torch.pow(10,lkappi)
+        ret = np.log(10)*torch.pow(10,ltaui)*g/kappai-dPmagi
+        return ret
+    Pg_hse = torch.stack(RK4_solver(rfunc)(ltau.squeeze(), Pg_top),dim=1)
+    return Pg_hse
