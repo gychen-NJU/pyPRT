@@ -3,6 +3,8 @@ from .phys import *
 from .atoms import atomic_config
 from .partition_function import u123
 from .math import signclamp, f1_formal_sol1,f1_formal_sol2
+import pkg_resources
+import warnings
 
 kB = const.k*1e7
 nconsider = 28 # number of components considered in the HSE equation
@@ -150,3 +152,102 @@ def ie_pressure(theta, pe, **kwargs):
         )
         return p,debug_log
     return p
+
+def modify_pe(theta,pe,pg,**kwargs):
+    device=theta.device
+    dtype=theta.dtype
+    atomic_properties = kwargs.get('atomic_properties',atomic_config())
+    T = 5040./theta
+    neg_pe = pe<=0
+    if torch.any(neg_pe):
+        pe = torch.where(neg_pe,1.e-15,pe)
+    cmol = molecular_balance(theta) # molecular constant cmol[0]-> H2+, cmol[1]-> H2
+    cmol = torch.clamp(cmol, -30, 30)
+    g4 = pe*torch.pow(10,cmol[0])
+    g5 = pe*torch.pow(10,cmol[1])
+    g4 = torch.where(neg_pe,0.,g4)
+    g5 = torch.where(neg_pe,0.,g5)
+
+    abundance = torch.zeros(nconsider,1,1,1,device=device,dtype=dtype) # [28,1,1,1] -> abu of 28 compenents
+    chi1 = torch.zeros_like(abundance) # first ionization potential of 28 compenents
+    chi2 = torch.zeros_like(abundance) # second ionization potential of 28 compenents
+    u0 = torch.zeros(nconsider,*theta.shape).to(device=device,dtype=dtype) # [28,Nb,Nt,1] -> partition function of neutral atom for 28 compenents
+    u1 = torch.zeros_like(u0) # partition function of ionized atom for 28 compenents
+    u2 = torch.zeros_like(u0) # partition function of doubly ionized atom for 28 compenents
+    for i in range(nconsider):
+        weight, abundance[i], chi1[i], chi2[i] = atomic_properties(i+1)
+        u0[i], u1[i], u2[i] = u123(i+1,T)
+
+    g2 = Saha(theta,chi1[1],u0[1],u1[1],pe) # p(H+)/p(H)
+    g3 = Saha(theta,0.754,1,u0[1],pe) # p(H-)/p(H)
+    g3 = torch.clamp(g3,min=1.e-30,max=1.e30)
+    g3 = 1/g3
+    g1 = torch.zeros_like(T)
+
+    for i in range(1,nconsider):
+        a = Saha(theta,chi1[i],u0[i],u1[i],pe)
+        b = Saha(theta,chi2[i],u1[i],u2[i],pe)
+        c = 1+a*(1+b)
+        c = signclamp(c,min=1.e-20,max=1.e20)
+
+        pi = abundance[i]/c
+        ss1 = (1+2.*b)
+        ss1 = signclamp(ss1,min=1.e-20,max=1.e20)
+        ss  = pi*a*ss1
+        g1 = g1+ss
+    a = 1+g2+g3
+    b = 2.*(1+g2/g5*g4)
+    c = g5
+    d = g2-g3
+    e = g2/g5*g4
+    a = signclamp(a,min=1.e-15,max=1.e15)
+    d = signclamp(d,min=1.e-15,max=1.e15)
+
+    c1 = c*b**2+a*d*b-e*a**2
+    c2 = 2.*a*e-d*b+a*b*g1
+    c3 = -(e+b*g1)
+
+    f1 = 0.5*c2/c1
+    f1 = -f1+torch.sign(c1)*torch.sqrt(f1**2-c3/c1) # p(H)/p(H')
+    f5 = (1.-a*f1)/b # P(H2)/P(H')
+    f4 = e*f5 # P(H2+)/P(H')
+    f3 = g3*f1 # P(H-)/P(H')
+    f2 = g2*f1 # P(H+)/P(H')
+    fe = torch.abs(signclamp(f2-f3+f4+g1,min=1.e-30,max=1.e30)) # P(e-)/P(H')
+
+    phtot=pe/fe
+    
+    large_f5 = f5>1.e-4
+    pe_new = torch.zeros_like(f1)
+    pe_large_f5 = (pg/(1.+(f1+f2+f3+f4+f5+0.1014)/fe))[large_f5]
+    const6=g5/pe*f1**2
+    const7=signclamp(f2-f3+g1,min=1.e-15,max=1.e15)
+    for i in range(5):
+        f5=phtot*const6
+        f4 = e*f5
+        fe = const7+f4
+        phtot = pe/fe
+    pe_new = pg/(1.+(f1+f2+f3+f4+f5+0.1014)/fe)
+    pe_new[large_f5] = pe_large_f5
+    pe_new = torch.where(pe<=0,1e-15,pe_new)
+    return pe_new
+
+def relax_pe(T,Pg,maxiters=20):
+    prec = 1.e-5
+    theta = 5040/T
+    size = T.shape
+    net = torch.load(
+        pkg_resources.resource_filename(__name__, 'data/pefrompg.pkl'),
+        weights_only=False
+    ).to(device=T.device,dtype=T.dtype)
+    pe0 = torch.pow(10,net(T.ravel()/1e3,Pg.ravel())).reshape(size)
+    for i in range(maxiters):
+        pe1 = modify_pe(theta,pe0,Pg)
+        diff = torch.abs((pe1-pe0)/pe0)
+        if torch.all(diff<=prec):
+            break
+        else:
+            pe0 = (pe0+pe1)/2
+    if torch.any(diff>prec):
+        warnings.warn(f'Pressure relaxation did not converge after {maxiters} iterations.')
+    return pe1

@@ -21,7 +21,7 @@ __all__ = [
     'synth_me',
     'atomic_properties',
     'ie_pressure',
+    'relax_pe',
     'u123',
     'synth_old'
-    'relax_pe'
 ]
