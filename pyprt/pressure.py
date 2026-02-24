@@ -5,6 +5,7 @@ from .partition_function import u123
 from .math import signclamp, RK4_solver, lagrange_interp,derivative
 import pkg_resources
 import warnings
+from .absorption import continuum_absorption
 
 kB = const.k*1e7
 nconsider = 28 # number of components considered in the HSE equation
@@ -291,3 +292,63 @@ def hse_pressure(ltau,kappac,B,Pg_top,hc_mu=1):
         return ret
     Pg_hse = torch.stack(RK4_solver(rfunc)(ltau.squeeze(), Pg_top),dim=1)
     return Pg_hse
+
+def hse_pressure_new(ltau,T,Pg_top,hc_mu=1,AP=atomic_config()):
+    """
+    Calculate the HSE pressure
+    Parameters:
+        ltau    : log(tau) # ( 1,Nt,1), expand from small to large
+        T       : temperature # (Nb,Nt,1)
+        Pg_top  : top boundary pressure # (Nb,1)
+    Returns:
+        Pg    # (Nb,Nt,1)
+    """
+    # Rg = const.R*1e7
+    NA = const.N_A
+    Nt = ltau.squeeze().size(0)
+    pg = torch.zeros_like(T)
+    kappa = torch.zeros_like(T)
+    wref = torch.tensor([5000.],dtype=T.dtype,device=T.device)[None,None,:]
+    # pe = torch.zeros_like(T)
+    pg[:,0] = Pg_top
+    prec = 1.e-5
+    maxiters = 20
+    lt = ltau.squeeze()
+    tau = torch.pow(10,lt)
+    amw = AP.amw
+    abusum = AP.abusum
+    g = hc_mu*2.7414e4
+    x = torch.zeros_like(lt)
+    x[:-1] = g*(lt[1:]-lt[:-1])*np.log(10)
+    Tei = T[:,0:1]
+    pgi = Pg_top.unsqueeze(1)
+    pei = relax_pe(Tei,pgi)
+    ppi = ie_pressure(5040/Tei,pei)
+    kac = continuum_absorption(wref,Tei,pei,ppi)
+    mu = amw/(abusum+ppi["p(e-)/p(H')"])
+    kappa[:,0:1] = kac*NA/mu
+    for i in range(1,Nt):
+        pgj = (pg[:,i-1]+x[i-1]*tau[i-1]/kappa[:,i-1]).unsqueeze(1)
+        Tei = T[:,i:i+1]
+        pei = relax_pe(Tei,pgj)
+        ppi = ie_pressure(5040/Tei,pei)
+        kac = continuum_absorption(wref,Tei,pei,ppi)
+        mu  = amw/(abusum+ppi["p(e-)/p(H')"])
+        kappa[:,i:i+1] = kac*NA/mu
+        pg[:,i]=pg[:,i-1]+x[i-1]*(tau[i-1]/kappa[:,i-1]+tau[i]/kappa[:,i])/2
+        dif = 2*torch.abs((pg[:,i]-pgj[:,0]))/(pg[:,i]+pgj[:,0])
+        for nit in range(maxiters):
+            if torch.all(dif<=prec):
+                break
+            else:
+                pgj = pg[:,i:i+1]
+                pei = relax_pe(Tei,pgj)
+                ppi = ie_pressure(5040/Tei,pei)
+                kac = continuum_absorption(wref,Tei,pei,ppi)
+                mu  = amw/(abusum+ppi["p(e-)/p(H')"])
+                kappa[:,i:i+1] = kac*NA/mu
+                pg[:,i]=pg[:,i-1]+x[i-1]*(tau[i-1]/kappa[:,i-1]+tau[i]/kappa[:,i])/2
+                dif = 2*torch.abs((pg[:,i]-pgj[:,0]))/(pg[:,i]+pgj[:,0])
+        if torch.any(dif>prec):
+            warnings.warn(f'HSE relaxation did not converge after {maxiters} iterations.')
+    return pg
