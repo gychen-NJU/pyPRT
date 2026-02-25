@@ -250,6 +250,11 @@ class FixedFNOHydrostatic(nn.Module):
         self.debug_mode = debug
         
     def forward(self, ltau, T, Pg_top):
+        """
+        ltau  : in [-1,1]: (log(tau)+4)/(2+4)*2-1
+        T     : in [-1,1]: (T-1000)/(10000-1000)*2-1
+        Pg_top: in [-1,1]: (log(Pg_top)-2)/(7-2)*2-1
+        """
         Nb, Nt = T.shape  
         if self.debug_mode:
             print(f"Input: ltau={ltau.shape}, T={T.shape}, Pg_top={Pg_top.shape}")
@@ -525,6 +530,21 @@ class HSE_DeepONet(nn.Module):
             kernel_size=3, layers=4, se_reduction=16
             ) # (Nb,2,128) -> (Nb,1,32) : decoding incorporated feature from Temp and B.C.
 
+    def forward(self,ltaun,tn,pgtopn):
+        """
+        ltau   : (Nt,) # (log(tau)+4)/(2+4)*2-1
+        tn     : (Nb,Ns), Ns=64 # (T-1000)/(10000-1000)*2-1
+        pgtopn : (Nb,) # (log(Pg_top)-2)/(7-2)*2-1
+        """
+        f1 = self.branch_net1(tn.unsqueeze(1)) # (Nb,1,128)
+        f2 = self.branch_net2(pgtopn.unsqueeze(1)).unsqueeze(1) # (Nb,1,128)
+        f3 = self.trunck_net(ltaun.unsqueeze(1)).unsqueeze(0) # (1,Nt,32)
+        f12 = torch.cat([f1,f2],dim=1) # (Nb,2,128)
+        f4 = self.agency_net(f12) # (Nb,1,32)
+        f = torch.sum(f3*f4,dim=-1) # (Nb,Nt)
+        f = f-f[:,0:1]+pgtopn.unsqueeze(1)
+        return f
+
 class Conv1dSEAttnDecoder_Downsample(nn.Module):
     """
     1D conv + SE attentional decoder with downsampling
@@ -644,21 +664,6 @@ class Conv1dSEAttnDecoder_TransposeConv(nn.Module):
         # final 1x1 convolution: mid_channels -> out_channels
         x = self.final_conv(x)  # (Nb, 1, 128)
         return x
-
-    def forward(self,ltaun,tn,pgtopn):
-        """
-        ltau   : (Nt,)
-        tn     : (Nb,Ns), Ns=64
-        pgtopn : (Nb,)
-        """
-        f1 = self.branch_net1(tn.unsqueeze(1)) # (Nb,1,128)
-        f2 = self.branch_net2(pgtopn.unsqueeze(1)).unsqueeze(1) # (Nb,1,128)
-        f3 = self.trunck_net(ltaun.unsqueeze(1)).unsqueeze(0) # (1,Nt,32)
-        f12 = torch.cat([f1,f2],dim=1) # (Nb,2,128)
-        f4 = self.agency_net(f12) # (Nb,1,32)
-        f = torch.sum(f3*f4,dim=-1) # (Nb,Nt)
-        f = f-f[:,0:1]+pgtopn.unsqueeze(1)
-        return f
 
 if __name__ == '__main__':
     uu       = torch.linspace(-10,10,1000)
