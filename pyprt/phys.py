@@ -139,6 +139,7 @@ def Apply_Macroturbulence_Conv(Stokes, vmac, lambdas):
     spectra_padded = F.pad(spectra, (radius, radius), mode='reflect')
     convolved = F.conv1d(spectra_padded, kernels, padding=0,groups=Nb*Nc)
     Stokes_obs = convolved.reshape(Nb,Nc,-1).permute(0,2,1)
+    Stokes_obs = torch.where(torch.isclose(vmac,torch.zeros_like(vmac),atol=1e-3)[:,:,None],Stokes,Stokes_obs)
     return Stokes_obs
 
 def Saha(theta, chi, uj, ui, Pe):
