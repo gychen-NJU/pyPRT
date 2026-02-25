@@ -117,6 +117,8 @@ def Apply_Macroturbulence_Conv(Stokes, vmac, lambdas):
     """
     device = Stokes.device
     dtype  = Stokes.dtype
+    if torch.any(torch.isclose(vmac,torch.zeros_like(vmac),atol=1e-3)):
+        return Stokes
     Nb = Stokes.size(0)
     Nc = Stokes.size(2)
     dl = torch.diff(lambdas.squeeze()).min()
