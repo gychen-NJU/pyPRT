@@ -241,7 +241,8 @@ def relax_pe(T,Pg,maxiters=20):
         pkg_resources.resource_filename(__name__, 'data/pefrompg.pkl'),
         weights_only=False
     ).to(device=T.device,dtype=T.dtype)
-    pe0 = torch.pow(10,net(T.ravel()/1e3,Pg.ravel())).reshape(size)
+    with torch.no_grad():
+        pe0 = torch.pow(10,net(T.ravel()/1e3,Pg.ravel())).reshape(size)
     for i in range(maxiters):
         pe1 = modify_pe(theta,pe0,Pg)
         diff = torch.abs((pe1-pe0)/pe0)
