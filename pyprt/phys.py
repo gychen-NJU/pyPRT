@@ -121,6 +121,8 @@ def Apply_Macroturbulence_Conv(Stokes, vmac, lambdas):
         return Stokes
     Nb = Stokes.size(0)
     Nc = Stokes.size(2)
+    Nw = lambdas.numel()
+    rmax = Nw-1
     dl = torch.diff(lambdas.squeeze()).min()
     c = const.c
     lambdac = lambdas.squeeze().mean().item()
@@ -130,6 +132,7 @@ def Apply_Macroturbulence_Conv(Stokes, vmac, lambdas):
     kernel_size  = int(2*np.ceil(3*sigma_pixels)+1)
     kernel_size  = kernel_size if kernel_size%2==1 else kernel_size+1
     radius = kernel_size // 2
+    radius = min(radius,rmax)
     x = torch.arange(-radius,radius+1,device=device,dtype=dtype)[None,None,None,:] # (1,1,1,Nk)
     sigma = (s_mac/dl)[...,None,None] # (Nb,1,1,1)
     kernels =  torch.exp(-x**2 / (2 * sigma**2)) # (Nb,1,1,Nk)
