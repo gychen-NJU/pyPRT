@@ -80,16 +80,16 @@ class synthesis2():
             # vLos = vLos.requires_grad_(True)
             # vmic = vmic.requires_grad_(True)
             X = torch.cat([T,Pe,B,th,ph,vLos,vmic],dim=-1)
-        t  = to_tensor(T   ,**kwargs)[:,:,None]
-        p  = to_tensor(Pe  ,**kwargs)[:,:,None]
-        b  = to_tensor(B   ,**kwargs)[:,:,None]
-        g  = to_tensor(th  ,**kwargs)[:,:,None]
-        f  = to_tensor(ph  ,**kwargs)[:,:,None]
-        v  = to_tensor(vLos,**kwargs)[:,:,None]
-        m = to_tensor(vmic,**kwargs)[:,:,None]
-        vmac = to_tensor(vmac,**kwargs)[:,None]
-        ltau = to_tensor(ltau,**kwargs)[None,:,None]
-        lambdas = to_tensor(lambdas,**kwargs)[None,None,:]
+        t  = to_tensor(T   ,**kwargs)[:,:,None].to(device=self.device,dtype=self.dtype)
+        p  = to_tensor(Pe  ,**kwargs)[:,:,None].to(device=self.device,dtype=self.dtype)
+        b  = to_tensor(B   ,**kwargs)[:,:,None].to(device=self.device,dtype=self.dtype)
+        g  = to_tensor(th  ,**kwargs)[:,:,None].to(device=self.device,dtype=self.dtype)
+        f  = to_tensor(ph  ,**kwargs)[:,:,None].to(device=self.device,dtype=self.dtype)
+        v  = to_tensor(vLos,**kwargs)[:,:,None].to(device=self.device,dtype=self.dtype)
+        m = to_tensor(vmic,**kwargs)[:,:,None].to(device=self.device,dtype=self.dtype)
+        vmac = to_tensor(vmac,**kwargs)[:,None].to(device=self.device,dtype=self.dtype)
+        ltau = to_tensor(ltau,**kwargs)[None,:,None].to(device=self.device,dtype=self.dtype)
+        lambdas = to_tensor(lambdas,**kwargs)[None,None,:].to(device=self.device,dtype=self.dtype)
         theta = 5040/t
         P = ie_pressure(theta,p,atomic_properties=self.AP)
         K_matx = self._Propagation_matrix(P,t,p,b,g,f,v,m,lambdas,**kwargs)
