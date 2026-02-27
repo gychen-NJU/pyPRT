@@ -1,6 +1,9 @@
 from pyprt.needs import *
 from pyprt import synth
-from pyprt.utils import load_initial_guess
+from pyprt.utils import load_initial_guess,grid2node,node2grid
+import time
+import pickle
+from CuSP.annealing import DualAnnealing
 
 class Inversion(synth):
     """
@@ -27,6 +30,7 @@ class Inversion(synth):
         self.Nt = None
         self.Nb = None
         self.Nw = None
+        self.log = dict()
 
     def __call__(
         self,
@@ -35,7 +39,7 @@ class Inversion(synth):
         initial_guess="Quiet_sun",
         device=None,
         mode='fix_pe', # fix_pe,fix_pg,hse
-        max_steps=1000,
+        maxiters=20,
         **kwargs
     ):
         """
@@ -47,7 +51,8 @@ class Inversion(synth):
                 Initial guess for the inversion. Default is "Quiet_sun".
         """
         IG = load_initial_guess(initial_guess)
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu') if device is None else device
+        device = iquv_obs.device if device is None else device
+        wavs   = wavs.float().to(device=device)
         ltau   = torch.from_numpy(IG["ltau"]       ).flip(0).float().to(device=device)
         T0     = torch.from_numpy(IG["T"]          ).flip(0).float().to(device=device)
         Pe0    = torch.from_numpy(IG["Pe"]         ).flip(0).float().to(device=device)
@@ -60,17 +65,100 @@ class Inversion(synth):
         vmac0  = torch.tensor([0.]).float().to(device=device)
         param0 = torch.cat([T0,vLos0,B0,gamma0,phi0,vmic0[0:1],vmac0],dim=0)
         self.Np = param0.numel() # Number of parameters
+        self.device=device
+        pe_fixed = kwargs.pop('pe_fixed',None)
+        Pe0 = Pe0 if pe_fixed is None else pe_fixed
         if mode=="fix_pe":
-            ivs = self._main(iquv_obs,wavs,ltau,param0,pe_fixed=Pe0,max_steps=max_steps,**kwargs)
+            ivs = self._main(iquv_obs,wavs,ltau,param0,pe_fixed=Pe0,maxiters=maxiters,**kwargs)
         elif mode=='fix_pg':
-            ivs = self._main(iquv_obs,wavs,ltau,param0,pg_fixed=Pg0,max_steps=max_steps,**kwargs)
+            ivs = self._main(iquv_obs,wavs,ltau,param0,pg_fixed=Pg0,maxiters=maxiters,**kwargs)
         elif mode=='hse':
-            ivs = self._main(iquv_obs,wavs,ltau,param0,max_steps=max_steps,**kwargs)
+            ivs = self._main(iquv_obs,wavs,ltau,param0,maxiters=maxiters,**kwargs)
         else:
             raise ValueError(f"mode {mode} not implemented")
         return ivs
 
-    def _main(self,iquv_obs,wavs,ltau,param0,pe_fixed=None,pg_fixed=None,max_steps=1000,**kwargs):
+    def _main(self,iquv_obs,wavs,ltau,param0,pe_fixed=None,pg_fixed=None,maxiters=20,**kwargs):
+        Nt = ltau.size(0)
+        Nb = iquv_obs.size(0)
+        Nw = iquv_obs.size(1)
+        nnodes_list = kwargs.get('nnodes_list',self._nnodes(Nt))
+        self.Nb,self.Nt,self.Nw = Nb,Nt,Nw
+        self.DOF = Nw*4-self.Np # Degree Of Freedom
+
+        device = self.device
+        x0 = param0.clone().unsqueeze(0).repeat(Nb,1)
+        time0 = time.time()
+        for i,nnodes in enumerate(nnodes_list):
+            if i==0:
+                xnodes = grid2node(ltau,x0,nnodes)
+            else:
+                xnodes = grid2node(ltau,xgrid,nnodes)
+            def func(xnodes):
+                xgrid = node2grid(ltau,xnodes,nnodes)
+                pe = self._get_pe(ltau,xgrid,pe_fixed=pe_fixed,pg_fixed=pg_fixed)
+                iquv_syn = self._syn(wavs,ltau,xgrid,pe=pe)
+                chi2 = self._Chi2(iquv_syn,iquv_obs)
+                return chi2
+            bounds = [[2e3,1e4]]*nnodes+[[-5,5]]*nnodes+[[0,4e3]]*nnodes+[[0,np.pi]]*2*nnodes+[[0.0,2]]*2
+            # maxiter = max(maxiters,100) if i<=2 else maxiters
+            maxiter = maxiters
+            annealing_config = kwargs.get('annealing',dict())
+            adam = annealing_config.pop('adam',dict(ls_max_iter=20))
+            _ = annealing_config.pop('maxiter',None)
+            _ = annealing_config.pop('bounds',None)
+            save_path = annealing_config.pop('save_path','./Annealing/')
+            os.makedirs(save_path,exist_ok=True)
+            save_name = annealing_config.pop('save_name','result')
+            save_file = os.path.join(save_path,f'{save_name}.{i+1:04d}.N{nnodes:04d}.pkl')
+            if i==0:
+                hist_files = [save_file]
+            else:
+                hist_files.append(save_file)
+            res = DualAnnealing(
+                func,bounds,maxiter=maxiter,x0=xnodes,
+                adam=adam,
+                **annealing_config
+                )
+            with open(save_file,'wb') as f:
+                pickle.dump(res,f)
+            chi2 = res.e
+            message = f"Step: {i+1:4d}/{len(nnodes_list)} | "
+            message+= f"Nodes: {nnodes:4d}/{np.max(nnodes_list)} | Chi2: {chi2.item():.4e} | "
+            message+= f"Time : {(time.time()-time0)/60:6.2f} min "
+            print(message)
+            xgrid = node2grid(ltau,res.x,nnodes)
+        t = xgrid[:,0*Nt:1*Nt].detach().cpu().numpy()
+        v = xgrid[:,1*Nt:2*Nt].detach().cpu().numpy()
+        b = xgrid[:,2*Nt:3*Nt].detach().cpu().numpy()
+        g = xgrid[:,3*Nt:4*Nt].detach().cpu().numpy()
+        f = xgrid[:,4*Nt:5*Nt].detach().cpu().numpy()
+        m = xgrid[:,5*Nt     ].detach().cpu().numpy()
+        M = xgrid[:,5*Nt+1   ].detach().cpu().numpy()
+        p = self._get_pe(ltau,xgrid,pe_fixed=pe_fixed,pg_fixed=pg_fixed).detach().cpu().numpy()
+        ivs = dict(
+            T=t,vLos=v,Pe=p,Bmag=b,inclination=g,azimuth=f,vmic=m,vmac=M,
+            ltau=ltau.detach().cpu().numpy().ravel(),
+            res=res,
+        )
+        try:
+            self.log['annealing']=dict(annealing_hist=hist_files,nnodes_list=nnodes_list)
+        except:
+            self.log=dict(
+                annealing=dict(
+                    annealing_hist=hist_files,nnodes_list=nnodes_list
+                )
+                )
+        return ivs
+
+    @staticmethod
+    def _nnodes(Nt):
+        nums = np.floor(np.log(Nt)/np.log(2))
+        nnodes_list = [int(2**i) for i in range(int(nums))]
+        nnodes_list.append(Nt)
+        return nnodes_list
+
+    def _main_old(self,iquv_obs,wavs,ltau,param0,pe_fixed=None,pg_fixed=None,maxiters=1000,**kwargs):
         """
         Main function for inversion
         
@@ -92,7 +180,7 @@ class Inversion(synth):
         chi2_hist = []
         self.Nb,self.Nt,self.Nw = Nb,Nt,Nw
         self.DOF = Nw*4-self.Np # Degree Of Freedom
-        for i in range(max_steps):
+        for i in range(maxiters):
             param.requires_grad_(True)
             pe = self._get_pe(ltau,param,pe_fixed=pe_fixed,pg_fixed=pg_fixed)
             iquv_syn = self._syn(wavs,ltau,param,pe=pe)
@@ -128,7 +216,9 @@ class Inversion(synth):
             pg_fixed: None or torch.Tensor # (Nt,)
         """
         if pe_fixed is not None:
-            pe = pe_fixed.unsqueeze(0).repeat(Nb,1) # (Nb,Nt)
+            # print(self.Nb)
+            pe = pe_fixed.unsqueeze(0).repeat(self.Nb,1) # (Nb,Nt)
+            # print(pe_fixed.shape)
         if pg_fixed is not None:
             pass
         else:
@@ -169,11 +259,13 @@ class Inversion(synth):
         """
         Ws = torch.tensor(self.w_iquv, dtype=iquv_syn.dtype, device=iquv_syn.device)
         Ss = torch.tensor([0.118]+[0.204]*3,dtype=iquv_obs.dtype,device=iquv_obs.device)
+        Ic = iquv_obs[:,0:1,0:1] # (Nb,1,1)
         F  = self.DOF
         Ws = Ws[None,:] # (1,4)
         Ss = Ss[None,None,:] # (1,1,4)
         chi2 = torch.sum(
-            Ws**2*torch.sum((iquv_syn - iquv_obs)**2/Ss**2,dim=1),
-            dim=-1
+            Ws**2*torch.sum((iquv_syn - iquv_obs)**2/Ss**2/Ic**2,dim=1),
+            dim=-1,
+            keepdim=True
             )/F # (Nb,)
         return chi2

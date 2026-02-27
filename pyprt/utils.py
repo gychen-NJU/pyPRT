@@ -68,3 +68,102 @@ def get_xyz(atomic_properties):
     Y = X*atomic_properties.abu[1]*atomic_properties.wgt[1]
     Z = 1-X-Y
     return X,Y,Z
+
+def NormalizeNodes(ltau,nodes):
+    device = nodes.device
+    ltau = ltau.clone().squeeze().to(device)
+    Nt = ltau.numel()
+    idx = torch.searchsorted(ltau,nodes).clamp(min=1,max=Nt-1)
+    lower = ltau[idx-1]
+    upper = ltau[idx]
+    normal = (nodes-lower)/(upper-lower)
+    lgrid = 2.0*(idx-1)/(Nt-1)-1.0
+    ugrid = 2.0*idx/(Nt-1)-1.0
+    ltn = lgrid+normal*(ugrid-lgrid)
+    # print('nodes : ',nodes)
+    # print('normal: ',normal)
+    # print('lower : ',lower)
+    # print('upper : ',upper)
+    # print('idx   : ',idx)
+    # print('ltau  : ',ltau)
+    return ltn
+
+def grid2node(ltau,x,nnodes=1):
+    Nt = ltau.numel()
+    if nnodes >= Nt:
+        return x
+    Nb = x.size(0)
+    tvbgf = x[:,:5*Nt].reshape(Nb,5,Nt)[:,:,None,:].clone() # (Nb,5,1,Nt)
+    m = x[:,5*Nt  ]
+    M = x[:,5*Nt+1]
+    if nnodes==1:
+        xnodes = tvbgf.mean(dim=-1,keepdim=True) # (Nb,5,1,1)
+    elif nnodes==2:
+        xnodes = torch.stack([tvbgf[:,:,:,0],tvbgf[:,:,:,-1]],dim=2) # (Nb,5,1,2)
+    # elif nnodes==3:
+    #     ltnodes = torch.zeros(Nb,5,nnodes,2).to(device=x.device,dtype=x.dtype)
+    #     ltnodes[...,0] = torch.linspace(-1,1,3).to(x.device,dtype=x.dtype)[None,None,None,:]
+    #     xnodes = F.grid_sample(
+    #         tvbgf,
+    #         ltnodes,
+    #         mode='bilinear',
+    #         padding_mode='border',
+    #         align_corners=True,
+    #     ) # (Nb,5,1,3)
+    else:
+        nodes  = torch.linspace(ltau.min(),ltau.max(),nnodes)
+        normal = NormalizeNodes(ltau.squeeze(),nodes)
+        ltnodes = torch.zeros(Nb,1,nnodes,2).to(device=x.device,dtype=x.dtype)
+        ltnodes[...,0] = normal.to(x.device,dtype=x.dtype)[None,None,None,:]
+        xnodes = F.grid_sample(
+            tvbgf,
+            ltnodes,
+            mode='bicubic',
+            padding_mode='border',
+            align_corners=True,
+        ) # (Nb,5,1,nnodes)
+    xnodes = torch.cat([xnodes.reshape(Nb,-1),m.unsqueeze(1),M.unsqueeze(1)],dim=1) # (Nb,5*nnodes+2)
+    return xnodes
+
+def node2grid(ltau,xnodes,nnodes=1):
+    Nt = ltau.numel()
+    if nnodes>=Nt:
+        return xnodes
+    tvbgf = xnodes[:,:5*nnodes].reshape(-1,5,nnodes)[:,:,None,:].clone() # (Nb,5,1,nnodes)
+    Nb = xnodes.size(0)
+    m  = xnodes[:,5*nnodes  ]
+    M  = xnodes[:,5*nnodes+1]
+    if nnodes==1:
+        xgrid = tvbgf.repeat(1,1,1,Nt)
+    else :
+        mode = 'bicubic' if (nnodes>=4) else 'bilinear'
+        ltnodes = torch.linspace(ltau.min(),ltau.max(),nnodes).to(xnodes.device,dtype=xnodes.dtype)
+        normal = NormalizeNodes(ltnodes,ltau.squeeze())
+        # print(normal)
+        ltgrid = torch.zeros(Nb,1,Nt,2).to(device=xnodes.device,dtype=xnodes.dtype)
+        # print(ltgrid.shape,normal.shape)
+        ltgrid[...,0] = normal[None,None,:]
+        # print(tvbgf)
+        xgrid = F.grid_sample(
+            tvbgf,
+            ltgrid,
+            mode=mode,
+            padding_mode='border',
+            align_corners=True,
+        ) # (Nb,5,1,Nt)
+    # else:
+    #     ltnodes = torch.linspace(-ltau.min(),ltau.max(),nnodes).to(x.device,dtype=x.dtype)
+    #     normal = NormalizeNodes(ltnodes,ltau)
+    #     ltgrid = torch.zeros(Nb,5,Nt,2).to(device=x.device,dtype=x.dtype)
+    #     ltgrid[...,0] = normal[None,None,:,None]
+    #     xgrid = F.grid_sample(
+    #         tvbgf,
+    #         ltgrid,
+    #         mode='bicubic',
+    #         padding_mode='border',
+    #         align_corners=True,
+    #     ) # (Nb,5,1,Nt)
+    # print(xgrid[0,1,0,:])
+    # print(xgrid.shape,ltgrid.shape)
+    x = torch.cat([xgrid.reshape(Nb,-1),m.unsqueeze(1),M.unsqueeze(1)],dim=1) # (Nb,5*Nt+2)
+    return x
