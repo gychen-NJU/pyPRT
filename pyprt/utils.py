@@ -167,3 +167,41 @@ def node2grid(ltau,xnodes,nnodes=1):
     # print(xgrid.shape,ltgrid.shape)
     x = torch.cat([xgrid.reshape(Nb,-1),m.unsqueeze(1),M.unsqueeze(1)],dim=1) # (Nb,5*Nt+2)
     return x
+
+def spline_smooth(x, y, s=None, k=3, adaptive=False):
+    """
+    Spline smooth
+
+    Paramerter:
+    ------------
+    x, y: data point
+    s: smooth factor, None for interpolation, the larger the smoother
+    k: spline order
+    adaptive: whether to use adaptive smoothing
+    
+    Return:
+    ------------
+    y_smooth: smoothed data
+    spline: spline object
+    """
+    from scipy.interpolate import UnivariateSpline, LSQUnivariateSpline
+    # enforce increasing x
+    if not np.all(np.diff(x) > 0):
+        sort_idx = np.argsort(x)
+        x_sorted = x[sort_idx]
+        y_sorted = y[sort_idx]
+    else:
+        x_sorted = x
+        y_sorted = y
+    
+    if adaptive and s is None:
+        # adaptive smoothing
+        # estimating s based on the noise level
+        residuals = np.diff(y_sorted, 2)  # estimate noise by second derivative
+        noise_level = np.std(residuals) / np.sqrt(6)  # standard deviation of second derivative
+        s = len(x_sorted) * (noise_level**2)  # automatically calculate s
+    # create spline
+    spline = UnivariateSpline(x_sorted, y_sorted, s=s, k=k)
+    # compute smoothed values
+    y_smooth = spline(x_sorted)
+    return y_smooth, spline
