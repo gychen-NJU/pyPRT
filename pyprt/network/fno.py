@@ -300,7 +300,7 @@ class MultiScaleProjectionFixed(nn.Module):
             nn.Linear(width * 2, 1)
         )
         # debug information
-        print(f"MultiScaleProjection: width={width}, total_channels={total_channels}")
+        # print(f"MultiScaleProjection: width={width}, total_channels={total_channels}")
     
     def forward(self, x):
         # x: (B, N, width)

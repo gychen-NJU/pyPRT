@@ -1,6 +1,6 @@
 from pyprt.needs import *
 from pyprt import synth
-from pyprt.utils import load_initial_guess,grid2node,node2grid
+from pyprt.utils import load_initial_guess,grid2node,node2grid,spline_smooth
 import time
 import pickle
 from CuSP.annealing import DualAnnealing
@@ -85,6 +85,7 @@ class Inversion(synth):
         nnodes_list = kwargs.get('nnodes_list',self._nnodes(Nt))
         self.Nb,self.Nt,self.Nw = Nb,Nt,Nw
         self.DOF = Nw*4-self.Np # Degree Of Freedom
+        smooth = kwargs.get('smooth',True)
 
         device = self.device
         x0 = param0.clone().unsqueeze(0).repeat(Nb,1)
@@ -128,6 +129,8 @@ class Inversion(synth):
             message+= f"Time : {(time.time()-time0)/60:6.2f} min "
             print(message)
             xgrid = node2grid(ltau,res.x,nnodes)
+            if nnodes>4 and smooth:
+                xgrid = self._smooth(ltau,xgrid)
         t = xgrid[:,0*Nt:1*Nt].detach().cpu().numpy()
         v = xgrid[:,1*Nt:2*Nt].detach().cpu().numpy()
         b = xgrid[:,2*Nt:3*Nt].detach().cpu().numpy()
@@ -150,6 +153,33 @@ class Inversion(synth):
                 )
                 )
         return ivs
+
+    @staticmethod
+    def _smooth(ltau,xgrid):
+        device = xgrid.device
+        Nb = xgrid.size(0)
+        Nt = ltau.numel()
+        ltau_array = ltau.detach().squeeze().cpu().numpy()
+        # print('1: ',xgrid.shape)
+        for i in range(Nb):
+            ti = xgrid[i,0*Nt:1*Nt].detach().cpu().numpy()
+            vi = xgrid[i,1*Nt:2*Nt].detach().cpu().numpy()
+            bi = xgrid[i,2*Nt:3*Nt].detach().cpu().numpy()
+            gi = xgrid[i,3*Nt:4*Nt].detach().cpu().numpy()
+            fi = xgrid[i,4*Nt:5*Nt].detach().cpu().numpy()
+            mi = xgrid[i,5*Nt     ].detach().cpu().numpy()
+            Mi = xgrid[i,5*Nt+1   ].detach().cpu().numpy()
+            ti,_ = spline_smooth(ltau_array,ti,adaptive=True)
+            vi,_ = spline_smooth(ltau_array,vi,adaptive=True)
+            bi,_ = spline_smooth(ltau_array,bi,adaptive=True)
+            gi,_ = spline_smooth(ltau_array,gi,adaptive=True)
+            fi,_ = spline_smooth(ltau_array,fi,adaptive=True)
+            # print('2: ',ti.shape)
+            xsmooth = torch.from_numpy(np.concatenate([ti,vi,bi,gi,fi,[mi],[Mi]],axis=0)).float()
+            # print('3: ',xsmooth.shape,xgrid[i].shape)
+            xgrid[i] = xsmooth.clone().to(device)
+            del xsmooth,ti,vi,bi,gi,fi,mi,Mi
+        return xgrid
 
     @staticmethod
     def _nnodes(Nt):
